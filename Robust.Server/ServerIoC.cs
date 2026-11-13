@@ -45,6 +45,10 @@ namespace Robust.Server
         {
             SharedIoC.RegisterIoC(deps);
 
+            // StarHorizon-Start
+            deps.Register<Robust.Shared.Threading.IParallelManager, Robust.Server.Threading.ServerParallelManager>(overwrite: true);
+            deps.Register<Robust.Shared.Threading.IParallelManagerInternal, Robust.Server.Threading.ServerParallelManager>(overwrite: true);
+            // StarHorizon-End
             deps.Register<IBaseServer, BaseServer>();
             deps.Register<IBaseServerInternal, BaseServer>();
             deps.Register<BaseServer, BaseServer>();
