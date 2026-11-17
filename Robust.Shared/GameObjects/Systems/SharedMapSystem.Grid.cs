@@ -1291,7 +1291,54 @@ public abstract partial class SharedMapSystem
             return false;
 
         chunk.AddToSnapGridCell((ushort)chunkTile.X, (ushort)chunkTile.Y, euid);
+        UnderlayAnchorChanged(gridUid, grid, chunk, chunkTile, euid, false); // Horizon
         return true;
+    }
+
+    /// <summary>
+    /// Horizon: an entity was anchored on a tile or removed from it. If the tile is an underlay tile (a landing pad)
+    /// and the entity is solid (a wall), the tile's collision for other grids has changed.
+    /// </summary>
+    private void UnderlayAnchorChanged(
+        EntityUid gridUid,
+        MapGridComponent grid,
+        MapChunk chunk,
+        Vector2i chunkTile,
+        EntityUid anchored,
+        bool removed)
+    {
+        // Clients get grid fixtures from the server.
+        if (_netManager.IsClient)
+            return;
+
+        // A grid that is still being set up regenerates all of its collision once it is ready,
+        // a bulk tile change does so when it is done, and planet maps have no grid collision.
+        if (grid.LifeStage < ComponentLifeStage.Initialized ||
+            grid.LifeStage > ComponentLifeStage.Running ||
+            chunk.SuppressCollisionRegeneration ||
+            _mapQuery.HasComp(gridUid) ||
+            TerminatingOrDeleted(gridUid))
+        {
+            return;
+        }
+
+        var tile = chunk.GetTile((ushort)chunkTile.X, (ushort)chunkTile.Y);
+
+        if (!GridChunkPartition.IsGridUnderlay(_tileMan, tile))
+            return;
+
+        // If the entity's fixtures are already gone (it is being deleted) we cannot tell what it was, so assume a blocker.
+        var known = _fixturesQuery.HasComp(anchored);
+
+        if (known ? !GridChunkPartition.IsGridBlocker(anchored, _fixturesQuery) : !removed)
+            return;
+
+        // The chunk's fixture ids are sent to clients along with its tiles.
+        chunk.LastTileModifiedTick = _timing.CurTick;
+        grid.LastTileModifiedTick = _timing.CurTick;
+        Dirty(gridUid, grid);
+
+        RegenerateCollision(gridUid, grid, chunk);
     }
 
     public bool AddToSnapGridCell(EntityUid gridUid, MapGridComponent grid, EntityCoordinates coords, EntityUid euid)
@@ -1308,6 +1355,7 @@ public abstract partial class SharedMapSystem
 
         var chunkTile = chunk.GridTileToChunkTile(pos);
         chunk.RemoveFromSnapGridCell((ushort)chunkTile.X, (ushort)chunkTile.Y, euid);
+        UnderlayAnchorChanged(gridUid, grid, chunk, chunkTile, euid, true); // Horizon
     }
 
     public void RemoveFromSnapGridCell(EntityUid gridUid, MapGridComponent grid, EntityCoordinates coords, EntityUid euid)
@@ -1635,6 +1683,14 @@ public abstract partial class SharedMapSystem
         {
             var newTileRef = new TileRef(uid, gridTile, newTile);
             _mapInternal.RaiseOnTileChanged((uid, grid), newTileRef, oldTile, mapChunk.Indices);
+        }
+
+        // Horizon: swapping a normal tile for an underlay tile (or back) keeps the chunk's shape
+        // but changes its collision.
+        if (!shapeChanged && newTile.TypeId != oldTile.TypeId)
+        {
+            shapeChanged = GridChunkPartition.IsGridUnderlay(_tileMan, newTile) !=
+                           GridChunkPartition.IsGridUnderlay(_tileMan, oldTile);
         }
 
         if (shapeChanged && !mapChunk.SuppressCollisionRegeneration)

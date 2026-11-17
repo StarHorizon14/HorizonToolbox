@@ -18,6 +18,7 @@ internal partial class MapManager : IMapManagerInternal, IEntityEventSubscriber
     [Dependency] private readonly IManifoldManager _manifolds = default!;
     [Dependency] private readonly ILogManager _logManager = default!;
     [Dependency] private readonly IConsoleHost _conhost = default!;
+    [Dependency] private readonly ITileDefinitionManager _tileDefs = default!; // Horizon
 
     private ISawmill _sawmill = default!;
 

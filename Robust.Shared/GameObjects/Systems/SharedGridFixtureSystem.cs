@@ -24,9 +24,11 @@ namespace Robust.Shared.GameObjects
         [Dependency] private readonly FixtureSystem _fixtures = default!;
         [Dependency] private readonly SharedMapSystem _map = default!;
         [Dependency] private readonly IConfigurationManager _cfg = default!;
+        [Dependency] private readonly ITileDefinitionManager _tileDefs = default!; // Horizon
 
         private bool _enabled;
         private float _fixtureEnlargement;
+        private EntityQuery<FixturesComponent> _fixturesQuery; // Horizon
 
         internal const string ShowGridNodesCommand = "showgridnodes";
 
@@ -34,6 +36,7 @@ namespace Robust.Shared.GameObjects
         {
             base.Initialize();
             UpdatesBefore.Add(typeof(SharedBroadphaseSystem));
+            _fixturesQuery = GetEntityQuery<FixturesComponent>(); // Horizon
 
             Subs.CVar(_cfg, CVars.GenerateGridFixtures, SetEnabled, true);
             Subs.CVar(_cfg, CVars.GridFixtureEnlargement, SetEnlargement, true);
@@ -91,7 +94,9 @@ namespace Robust.Shared.GameObjects
 
             foreach (var (chunk, rectangles) in mapChunks)
             {
-                UpdateFixture(uid, chunk, rectangles, body, manager, xform);
+                // Horizon: underlay tiles (landing pads) make no collision, so other grids can overlap them.
+                // The full rectangles are still used below for grid splitting.
+                UpdateFixture(uid, chunk, GetCollisionRectangles(chunk, rectangles), body, manager, xform);
 
                 foreach (var id in chunk.Fixtures)
                 {
@@ -103,6 +108,19 @@ namespace Robust.Shared.GameObjects
             _fixtures.FixtureUpdate(uid, manager: manager, body: body);
 
             CheckSplit(uid, mapChunks, removedChunks);
+        }
+
+        /// <summary>
+        /// Horizon: the rectangles of a chunk that should have collision,
+        /// i.e. everything but <see cref="ITileDefinition.GridUnderlay"/> tiles that have nothing solid anchored on them.
+        /// </summary>
+        private List<Box2i> GetCollisionRectangles(MapChunk chunk, List<Box2i> rectangles)
+        {
+            if (!GridChunkPartition.HasGridUnderlay(chunk, _tileDefs))
+                return rectangles;
+
+            GridChunkPartition.PartitionChunk(chunk, _tileDefs, _fixturesQuery, out _, out var collision);
+            return collision;
         }
 
         internal virtual void CheckSplit(EntityUid gridEuid, Dictionary<MapChunk, List<Box2i>> mapChunks,
