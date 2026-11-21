@@ -1296,8 +1296,15 @@ public abstract partial class SharedMapSystem
     }
 
     /// <summary>
-    /// Horizon: an entity was anchored on a tile or removed from it. If the tile is an underlay tile (a landing pad)
-    /// and the entity is solid (a wall), the tile's collision for other grids has changed.
+    /// Horizon: chunks whose underlay collision must be rebuilt, see <see cref="ProcessPendingUnderlay"/>.
+    /// </summary>
+    private readonly Dictionary<EntityUid, HashSet<Vector2i>> _pendingUnderlay = new();
+
+    /// <summary>
+    /// Horizon: an entity was anchored on a tile or removed from it. If the tile is an underlay tile (a landing pad),
+    /// what stands on it decides whether other grids can pass, so the chunk's collision is rebuilt.
+    /// This is deferred to the next tick: entities are anchored while they are still being set up
+    /// (e.g. when a map is loaded), before their fixtures can be trusted.
     /// </summary>
     private void UnderlayAnchorChanged(
         EntityUid gridUid,
@@ -1307,38 +1314,68 @@ public abstract partial class SharedMapSystem
         EntityUid anchored,
         bool removed)
     {
-        // Clients get grid fixtures from the server.
-        if (_netManager.IsClient)
+        // Clients get grid fixtures from the server, and planet maps have no grid collision.
+        if (_netManager.IsClient || _mapQuery.HasComp(gridUid))
             return;
-
-        // A grid that is still being set up regenerates all of its collision once it is ready,
-        // a bulk tile change does so when it is done, and planet maps have no grid collision.
-        if (grid.LifeStage < ComponentLifeStage.Initialized ||
-            grid.LifeStage > ComponentLifeStage.Running ||
-            chunk.SuppressCollisionRegeneration ||
-            _mapQuery.HasComp(gridUid) ||
-            TerminatingOrDeleted(gridUid))
-        {
-            return;
-        }
 
         var tile = chunk.GetTile((ushort)chunkTile.X, (ushort)chunkTile.Y);
 
         if (!GridChunkPartition.IsGridUnderlay(_tileMan, tile))
             return;
 
-        // If the entity's fixtures are already gone (it is being deleted) we cannot tell what it was, so assume a blocker.
-        var known = _fixturesQuery.HasComp(anchored);
+        QueueUnderlayRegeneration(gridUid, chunk.Indices);
+    }
 
-        if (known ? !GridChunkPartition.IsGridBlocker(anchored, _fixturesQuery) : !removed)
+    /// <summary>
+    /// Horizon: rebuilds the collision of a chunk with underlay tiles on the next tick.
+    /// </summary>
+    internal void QueueUnderlayRegeneration(EntityUid gridUid, Vector2i chunkIndices)
+    {
+        if (_netManager.IsClient)
             return;
 
-        // The chunk's fixture ids are sent to clients along with its tiles.
-        chunk.LastTileModifiedTick = _timing.CurTick;
-        grid.LastTileModifiedTick = _timing.CurTick;
-        Dirty(gridUid, grid);
+        _pendingUnderlay.GetOrNew(gridUid).Add(chunkIndices);
+    }
 
-        RegenerateCollision(gridUid, grid, chunk);
+    /// <summary>
+    /// Horizon: rebuilds the collision of the chunks queued by <see cref="QueueUnderlayRegeneration"/>.
+    /// </summary>
+    internal void ProcessPendingUnderlay()
+    {
+        if (_pendingUnderlay.Count == 0)
+            return;
+
+        foreach (var (gridUid, indices) in _pendingUnderlay)
+        {
+            if (TerminatingOrDeleted(gridUid) ||
+                !_gridQuery.TryComp(gridUid, out var grid) ||
+                grid.LifeStage != ComponentLifeStage.Running)
+            {
+                continue;
+            }
+
+            var chunks = new HashSet<MapChunk>();
+
+            foreach (var index in indices)
+            {
+                if (grid.Chunks.TryGetValue(index, out var chunk) && !chunk.SuppressCollisionRegeneration)
+                {
+                    chunks.Add(chunk);
+
+                    // The chunk's fixture ids are sent to clients along with its tiles.
+                    chunk.LastTileModifiedTick = _timing.CurTick;
+                }
+            }
+
+            if (chunks.Count == 0)
+                continue;
+
+            grid.LastTileModifiedTick = _timing.CurTick;
+            Dirty(gridUid, grid);
+            RegenerateCollision(gridUid, grid, chunks);
+        }
+
+        _pendingUnderlay.Clear();
     }
 
     public bool AddToSnapGridCell(EntityUid gridUid, MapGridComponent grid, EntityCoordinates coords, EntityUid euid)

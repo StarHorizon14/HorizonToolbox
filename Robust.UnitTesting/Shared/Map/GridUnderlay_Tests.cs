@@ -126,6 +126,9 @@ public sealed class GridUnderlay_Tests
         var mapSystem = entManager.System<SharedMapSystem>();
         var xformSystem = entManager.System<SharedTransformSystem>();
         var fixtureSystem = entManager.System<FixtureSystem>();
+
+        // Underlay collision is rebuilt on the next tick.
+        void Tick() => mapSystem.ProcessPendingUnderlay();
         var mapId = sim.CreateMap().MapId;
         var grid = mapManager.CreateGridEntity(mapId);
         var fixtures = entManager.GetComponent<FixturesComponent>(grid);
@@ -148,11 +151,13 @@ public sealed class GridUnderlay_Tests
         // A cable: a fixture with no layer.
         var cable = Spawn(0.5f, 0);
         Assert.That(xformSystem.AnchorEntity(cable));
+        Tick();
         Assert.That(fixtures.FixtureCount, Is.EqualTo(0), "An entity with no collision layer made the pad solid");
 
         // A wall.
         var wall = Spawn(1.5f, 2);
         Assert.That(xformSystem.AnchorEntity(wall));
+        Tick();
         Assert.That(fixtures.FixtureCount, Is.EqualTo(1), "A wall on the pad did not make its tile solid");
 
         var aabb = fixtures.Fixtures.Values.First().Shape.ComputeAABB(Transform.Empty, 0);
@@ -164,12 +169,15 @@ public sealed class GridUnderlay_Tests
         });
 
         xformSystem.Unanchor(wall);
+        Tick();
         Assert.That(fixtures.FixtureCount, Is.EqualTo(0), "The tile stayed solid after the wall was unanchored");
 
         Assert.That(xformSystem.AnchorEntity(wall));
+        Tick();
         Assert.That(fixtures.FixtureCount, Is.EqualTo(1));
 
         entManager.DeleteEntity(wall);
+        Tick();
         Assert.That(fixtures.FixtureCount, Is.EqualTo(0), "The tile stayed solid after the wall was deleted");
         Assert.That(mapManager.GetAllGrids(mapId).Count(), Is.EqualTo(1));
     }

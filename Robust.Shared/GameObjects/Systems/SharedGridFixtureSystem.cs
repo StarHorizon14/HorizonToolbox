@@ -58,6 +58,20 @@ namespace Robust.Shared.GameObjects
             // This will also check for grid splits if applicable.
             var grid = Comp<MapGridComponent>(ev.EntityUid);
             _map.RegenerateCollision(ev.EntityUid, grid, _map.GetMapChunks(ev.EntityUid, grid).Values.ToHashSet());
+
+            // Horizon: what stands on underlay tiles is not set up yet while the grid initializes
+            // (e.g. when a map is loaded), so look at those chunks again next tick.
+            foreach (var chunk in grid.Chunks.Values)
+            {
+                if (GridChunkPartition.HasGridUnderlay(chunk, _tileDefs))
+                    _map.QueueUnderlayRegeneration(ev.EntityUid, chunk.Indices);
+            }
+        }
+
+        public override void Update(float frameTime)
+        {
+            base.Update(frameTime);
+            _map.ProcessPendingUnderlay(); // Horizon
         }
 
         private void SetEnabled(bool value) => _enabled = value;
