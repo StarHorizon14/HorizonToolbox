@@ -1291,7 +1291,91 @@ public abstract partial class SharedMapSystem
             return false;
 
         chunk.AddToSnapGridCell((ushort)chunkTile.X, (ushort)chunkTile.Y, euid);
+        UnderlayAnchorChanged(gridUid, grid, chunk, chunkTile, euid, false); // Horizon
         return true;
+    }
+
+    /// <summary>
+    /// Horizon: chunks whose underlay collision must be rebuilt, see <see cref="ProcessPendingUnderlay"/>.
+    /// </summary>
+    private readonly Dictionary<EntityUid, HashSet<Vector2i>> _pendingUnderlay = new();
+
+    /// <summary>
+    /// Horizon: an entity was anchored on a tile or removed from it. If the tile is an underlay tile (a landing pad),
+    /// what stands on it decides whether other grids can pass, so the chunk's collision is rebuilt.
+    /// This is deferred to the next tick: entities are anchored while they are still being set up
+    /// (e.g. when a map is loaded), before their fixtures can be trusted.
+    /// </summary>
+    private void UnderlayAnchorChanged(
+        EntityUid gridUid,
+        MapGridComponent grid,
+        MapChunk chunk,
+        Vector2i chunkTile,
+        EntityUid anchored,
+        bool removed)
+    {
+        // Clients get grid fixtures from the server, and planet maps have no grid collision.
+        if (_netManager.IsClient || _mapQuery.HasComp(gridUid))
+            return;
+
+        var tile = chunk.GetTile((ushort)chunkTile.X, (ushort)chunkTile.Y);
+
+        if (!GridChunkPartition.IsGridUnderlay(_tileMan, tile))
+            return;
+
+        QueueUnderlayRegeneration(gridUid, chunk.Indices);
+    }
+
+    /// <summary>
+    /// Horizon: rebuilds the collision of a chunk with underlay tiles on the next tick.
+    /// </summary>
+    internal void QueueUnderlayRegeneration(EntityUid gridUid, Vector2i chunkIndices)
+    {
+        if (_netManager.IsClient)
+            return;
+
+        _pendingUnderlay.GetOrNew(gridUid).Add(chunkIndices);
+    }
+
+    /// <summary>
+    /// Horizon: rebuilds the collision of the chunks queued by <see cref="QueueUnderlayRegeneration"/>.
+    /// </summary>
+    internal void ProcessPendingUnderlay()
+    {
+        if (_pendingUnderlay.Count == 0)
+            return;
+
+        foreach (var (gridUid, indices) in _pendingUnderlay)
+        {
+            if (TerminatingOrDeleted(gridUid) ||
+                !_gridQuery.TryComp(gridUid, out var grid) ||
+                grid.LifeStage != ComponentLifeStage.Running)
+            {
+                continue;
+            }
+
+            var chunks = new HashSet<MapChunk>();
+
+            foreach (var index in indices)
+            {
+                if (grid.Chunks.TryGetValue(index, out var chunk) && !chunk.SuppressCollisionRegeneration)
+                {
+                    chunks.Add(chunk);
+
+                    // The chunk's fixture ids are sent to clients along with its tiles.
+                    chunk.LastTileModifiedTick = _timing.CurTick;
+                }
+            }
+
+            if (chunks.Count == 0)
+                continue;
+
+            grid.LastTileModifiedTick = _timing.CurTick;
+            Dirty(gridUid, grid);
+            RegenerateCollision(gridUid, grid, chunks);
+        }
+
+        _pendingUnderlay.Clear();
     }
 
     public bool AddToSnapGridCell(EntityUid gridUid, MapGridComponent grid, EntityCoordinates coords, EntityUid euid)
@@ -1308,6 +1392,7 @@ public abstract partial class SharedMapSystem
 
         var chunkTile = chunk.GridTileToChunkTile(pos);
         chunk.RemoveFromSnapGridCell((ushort)chunkTile.X, (ushort)chunkTile.Y, euid);
+        UnderlayAnchorChanged(gridUid, grid, chunk, chunkTile, euid, true); // Horizon
     }
 
     public void RemoveFromSnapGridCell(EntityUid gridUid, MapGridComponent grid, EntityCoordinates coords, EntityUid euid)
@@ -1635,6 +1720,14 @@ public abstract partial class SharedMapSystem
         {
             var newTileRef = new TileRef(uid, gridTile, newTile);
             _mapInternal.RaiseOnTileChanged((uid, grid), newTileRef, oldTile, mapChunk.Indices);
+        }
+
+        // Horizon: swapping a normal tile for an underlay tile (or back) keeps the chunk's shape
+        // but changes its collision.
+        if (!shapeChanged && newTile.TypeId != oldTile.TypeId)
+        {
+            shapeChanged = GridChunkPartition.IsGridUnderlay(_tileMan, newTile) !=
+                           GridChunkPartition.IsGridUnderlay(_tileMan, oldTile);
         }
 
         if (shapeChanged && !mapChunk.SuppressCollisionRegeneration)

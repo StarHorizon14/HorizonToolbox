@@ -33,6 +33,10 @@ namespace Robust.Client.Graphics.Clyde
         private List<Entity<MapGridComponent>> _grids = new();
         private bool _drawTileEdges;
 
+        // Horizon: grids that have underlay tiles (landing pads) and are drawn below other grids.
+        private readonly HashSet<EntityUid> _underlayGrids = new();
+        private Comparison<Entity<MapGridComponent>>? _gridDrawOrder;
+
         private void RenderTileEdgesChanges(bool value)
         {
             _drawTileEdges = value;
@@ -60,6 +64,7 @@ namespace Robust.Client.Graphics.Clyde
 
             _grids.Clear();
             _mapManager.FindGridsIntersecting(mapId, worldBounds, ref _grids);
+            SortGridsForDrawing(); // Horizon
 
             var requiresFlush = true;
             GLShaderProgram gridProgram = default!;
@@ -200,6 +205,60 @@ namespace Robust.Client.Graphics.Clyde
             return datum;
         }
 
+        /// <summary>
+        /// Horizon: gives overlapping grids a fixed draw order, so a grid resting on another grid's
+        /// underlay tiles (a shuttle on a landing pad) is drawn on top of it:
+        /// the map's own grid first, then grids with underlay tiles, then larger grids before smaller ones.
+        /// </summary>
+        private void SortGridsForDrawing()
+        {
+            if (_grids.Count < 2)
+                return;
+
+            _underlayGrids.Clear();
+
+            foreach (var grid in _grids)
+            {
+                if (!_mapChunkData.TryGetValue(grid, out var chunks))
+                    continue;
+
+                foreach (var datum in chunks.Values)
+                {
+                    if (!datum.HasUnderlay)
+                        continue;
+
+                    _underlayGrids.Add(grid);
+                    break;
+                }
+            }
+
+            _gridDrawOrder ??= CompareGridDrawOrder;
+            _grids.Sort(_gridDrawOrder);
+        }
+
+        private int CompareGridDrawOrder(Entity<MapGridComponent> a, Entity<MapGridComponent> b)
+        {
+            var aMap = _entityManager.HasComponent<MapComponent>(a.Owner);
+            var bMap = _entityManager.HasComponent<MapComponent>(b.Owner);
+
+            if (aMap != bMap)
+                return aMap ? -1 : 1;
+
+            var aUnderlay = _underlayGrids.Contains(a.Owner);
+            var bUnderlay = _underlayGrids.Contains(b.Owner);
+
+            if (aUnderlay != bUnderlay)
+                return aUnderlay ? -1 : 1;
+
+            var aArea = a.Comp.LocalAABB.Width * a.Comp.LocalAABB.Height;
+            var bArea = b.Comp.LocalAABB.Width * b.Comp.LocalAABB.Height;
+
+            if (!aArea.Equals(bArea))
+                return bArea.CompareTo(aArea);
+
+            return a.Owner.Id.CompareTo(b.Owner.Id);
+        }
+
         private void CullEmptyChunks()
         {
             foreach (var (grid, chunks) in _mapChunkData)
@@ -224,6 +283,7 @@ namespace Robust.Client.Graphics.Clyde
             Span<ushort> indexBuffer = EnsureSize(ref _chunkMeshBuilderIndexBuffer, _indicesPerChunk(chunk));
             Span<Vertex2D> vertexBuffer = EnsureSize(ref _chunkMeshBuilderVertexBuffer, _verticesPerChunk(chunk));
 
+            var hasUnderlay = false; // Horizon
             var i = 0;
             var chunkSize = grid.Comp.ChunkSize;
             var chunkOriginScaled = chunk.Indices * chunkSize;
@@ -255,9 +315,12 @@ namespace Robust.Client.Graphics.Clyde
                             region = regionMaybe[tile.Variant];
                         }
 
-                        var rotationMirroring = (_tileDefinitionManager.TryGetDefinition(tile.TypeId, out var tileDef) && tileDef.AllowRotationMirror) ?
+                        var hasTileDef = _tileDefinitionManager.TryGetDefinition(tile.TypeId, out var tileDef);
+                        var rotationMirroring = (hasTileDef && tileDef!.AllowRotationMirror) ?
                                                     tile.RotationMirroring
                                                     : 0;
+
+                        hasUnderlay |= hasTileDef && tileDef!.GridUnderlay; // Horizon
 
                         WriteTileToBuffers(i, gridX, gridY, vertexBuffer, indexBuffer, region, rotationMirroring);
                         i += 1;
@@ -276,6 +339,7 @@ namespace Robust.Client.Graphics.Clyde
             datum.VBO.Reallocate(vertSlice);
 
             datum.TileCount = i;
+            datum.HasUnderlay = hasUnderlay; // Horizon
             datum.Dirty = false;
         }
 
@@ -523,6 +587,9 @@ namespace Robust.Client.Graphics.Clyde
             public GLBuffer EdgeVBO = default!;
             public GLBuffer EdgeEBO = default!;
             public int EdgeCount;
+
+            // Horizon: the chunk has at least one underlay tile.
+            public bool HasUnderlay;
 
             public MapChunkData()
             {

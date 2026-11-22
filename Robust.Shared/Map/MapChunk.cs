@@ -58,6 +58,12 @@ namespace Robust.Shared.Map
         public bool SuppressCollisionRegeneration { get; set; }
 
         /// <summary>
+        /// Horizon: cached answer to "does this chunk have grid underlay tiles", see <see cref="GridChunkPartition.HasGridUnderlay"/>.
+        /// Reset whenever a tile changes.
+        /// </summary>
+        internal bool? HasUnderlayCache;
+
+        /// <summary>
         ///     Constructs an instance of a MapChunk.
         /// </summary>
         /// <param name="x"></param>
@@ -254,6 +260,7 @@ namespace Robust.Shared.Map
             DebugTools.Assert(FilledTiles >= 0);
 
             oldTile = tileRef;
+            HasUnderlayCache = null; // Horizon
             tileRef = tile;
             ValidateChunk();
             return true;

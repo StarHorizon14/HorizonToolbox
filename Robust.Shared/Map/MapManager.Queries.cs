@@ -24,6 +24,18 @@ internal partial class MapManager
 
         while (enumerator.MoveNext(out var chunk))
         {
+            // Horizon: underlay tiles (landing pads) have no fixtures, so check the chunk's bounds for them,
+            // otherwise a grid (or the part of a grid) made of them is never found, e.g. to be drawn.
+            if (GridChunkPartition.HasGridUnderlay(chunk, _tileDefs))
+            {
+                var bounds = ((Box2) chunk.CachedBounds.Translated(chunk.Indices * chunk.ChunkSize)).Enlarged(-0.01f);
+                var poly = new PolygonShape();
+                poly.SetAsBox(bounds);
+
+                if (_manifolds.TestOverlap(shape, 0, poly, 0, shapeTransform, gridTransform))
+                    return true;
+            }
+
             foreach (var id in chunk.Fixtures)
             {
                 var fixture = grid.Comp.Fixtures[id];
@@ -280,14 +292,20 @@ internal partial class MapManager
 
         uid = EntityUid.Invalid;
         grid = null;
-        var state = (uid, grid, worldPos, _mapSystem, _transformSystem);
+        // Horizon: an underlay tile (landing pad) only wins if no other grid has a normal tile here.
+        var underlayUid = EntityUid.Invalid;
+        MapGridComponent? underlayGrid = null;
+        var state = (uid, grid, worldPos, _mapSystem, _transformSystem, _tileDefs, underlayUid, underlayGrid);
 
         FindGridsIntersecting(mapEnt, aabb, ref state, static (EntityUid iUid, MapGridComponent iGrid, ref (
             EntityUid uid,
             MapGridComponent? grid,
             Vector2 worldPos,
             SharedMapSystem mapSystem,
-            SharedTransformSystem xformSystem) tuple) =>
+            SharedTransformSystem xformSystem,
+            ITileDefinitionManager tileDefs,
+            EntityUid underlayUid,
+            MapGridComponent? underlayGrid) tuple) =>
         {
             // Turn the worldPos into a localPos and work out the relevant chunk we need to check
             // This is much faster than iterating over every chunk individually.
@@ -311,10 +329,31 @@ internal partial class MapManager
             if (chunkTile.IsEmpty)
                 return true;
 
+            // Horizon: keep looking, another grid may be sitting on top of this tile.
+            // Between several underlay tiles the larger entity id wins so the result does not depend on query order.
+            if (GridChunkPartition.IsGridUnderlay(tuple.tileDefs, chunkTile))
+            {
+                if (tuple.underlayGrid == null || iUid.Id > tuple.underlayUid.Id)
+                {
+                    tuple.underlayUid = iUid;
+                    tuple.underlayGrid = iGrid;
+                }
+
+                return true;
+            }
+
             tuple.uid = iUid;
             tuple.grid = iGrid;
             return false;
         }, approx: true, includeMap: false);
+
+        // Horizon: nothing on top, so the underlay tile it is. It still beats the map's own grid.
+        if (state.grid == null && state.underlayGrid != null)
+        {
+            uid = state.underlayUid;
+            grid = state.underlayGrid;
+            return true;
+        }
 
         if (state.grid == null && _gridQuery.TryGetComponent(mapEnt, out var mapGrid))
         {

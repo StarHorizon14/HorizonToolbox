@@ -52,6 +52,14 @@ namespace Robust.Shared.Map
         bool AllowRotationMirror => false;
 
         /// <summary>
+        ///     Horizon: a tile that other grids are allowed to overlap, such as a landing pad.
+        ///     It makes no grid collision fixture, it loses to a normal tile of another grid when
+        ///     looking for the grid at a position, and its grid is drawn below other grids.
+        ///     The tile still belongs to its grid in every other way (bounds, splitting, anchoring).
+        /// </summary>
+        bool GridUnderlay => false;
+
+        /// <summary>
         ///     Assign a new value to <see cref="TileId"/>, used when registering the tile definition.
         /// </summary>
         /// <param name="id">The new tile ID for this tile definition.</param>
